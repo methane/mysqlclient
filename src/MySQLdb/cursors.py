@@ -15,7 +15,7 @@ _EXECUTEMANY_MULTI_SEPARATOR = b"\n;\n"
 #: Regular expression for ``Cursor.executemany```.
 #: executemany only supports simple bulk insert.
 #: You can use it to load large dataset.
-RE_INSERT_VALUES = re.compile(
+_RE_INSERT_VALUES = re.compile(
     "".join(
         [
             r"\s*((?:INSERT|REPLACE)\b.+\bVALUES?\s*)",
@@ -26,23 +26,25 @@ RE_INSERT_VALUES = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
-RE_INSERT_VALUES_BYTES = re.compile(
-    RE_INSERT_VALUES.pattern.encode("ascii"), re.IGNORECASE | re.DOTALL
+_RE_INSERT_VALUES_BYTES = re.compile(
+    _RE_INSERT_VALUES.pattern.encode("ascii"), re.IGNORECASE | re.DOTALL
 )
-RE_EXECUTEMANY_DML = re.compile(
+_RE_EXECUTEMANY_DML = re.compile(
     r"\s*(?:INSERT|REPLACE|UPDATE|DELETE)\b", re.IGNORECASE
 )
-RE_EXECUTEMANY_DML_BYTES = re.compile(
-    RE_EXECUTEMANY_DML.pattern.encode("ascii"), re.IGNORECASE
+_RE_EXECUTEMANY_DML_BYTES = re.compile(
+    _RE_EXECUTEMANY_DML.pattern.encode("ascii"), re.IGNORECASE
 )
-RE_RETURNING = re.compile(r"\bRETURNING\b", re.IGNORECASE)
-RE_RETURNING_BYTES = re.compile(RE_RETURNING.pattern.encode("ascii"), re.IGNORECASE)
+_RE_RETURNING = re.compile(r"\bRETURNING\b", re.IGNORECASE)
+_RE_RETURNING_BYTES = re.compile(
+    _RE_RETURNING.pattern.encode("ascii"), re.IGNORECASE
+)
 
 
 def _match_insert_values(query):
     if isinstance(query, (bytes, bytearray)):
-        return RE_INSERT_VALUES_BYTES.match(query)
-    return RE_INSERT_VALUES.match(query)
+        return _RE_INSERT_VALUES_BYTES.match(query)
+    return _RE_INSERT_VALUES.match(query)
 
 
 def _is_executemany_dml(query):
@@ -50,13 +52,13 @@ def _is_executemany_dml(query):
     if isinstance(query, (bytes, bytearray)):
         return (
             b";" not in query
-            and RE_EXECUTEMANY_DML_BYTES.match(query) is not None
-            and RE_RETURNING_BYTES.search(query) is None
+            and _RE_EXECUTEMANY_DML_BYTES.match(query) is not None
+            and _RE_RETURNING_BYTES.search(query) is None
         )
     return (
         ";" not in query
-        and RE_EXECUTEMANY_DML.match(query) is not None
-        and RE_RETURNING.search(query) is None
+        and _RE_EXECUTEMANY_DML.match(query) is not None
+        and _RE_RETURNING.search(query) is None
     )
 
 
