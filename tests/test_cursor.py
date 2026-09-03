@@ -268,6 +268,7 @@ def test_executemany_multi_policy_and_capability():
     [
         ("UPDATE t SET value=%s", True),
         (b"DELETE FROM t WHERE id=%s", True),
+        (bytearray(b"UPDATE t SET value=%s"), True),
         ("INSERT INTO t SET value=%s", True),
         ("REPLACE INTO t SET value=%s", True),
         ("WITH values_ AS (SELECT 1) UPDATE t SET value=%s", False),

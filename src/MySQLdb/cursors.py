@@ -47,9 +47,7 @@ def _match_insert_values(query):
 
 def _is_executemany_dml(query):
     """Return whether query is safe for client-side multi-statement batching."""
-    if isinstance(query, bytearray):
-        query = bytes(query)
-    if isinstance(query, bytes):
+    if isinstance(query, (bytes, bytearray)):
         return (
             b";" not in query
             and RE_EXECUTEMANY_DML_BYTES.match(query) is not None
