@@ -72,6 +72,7 @@ MySQL C API function mapping
  ``mysql_get_server_info()``        ``conn.get_server_info()``
  ``mysql_info()``                   ``conn.info()``
  ``mysql_insert_id()``              ``conn.insert_id()``
+ ``mysql_more_results()``           ``conn.more_results()``
  ``mysql_num_fields()``             ``result.num_fields()``
  ``mysql_num_rows()``               ``result.num_rows()``
  ``mysql_options()``                various options to ``_mysql.connect()``
@@ -321,6 +322,27 @@ connect(parameters...)
             overridden. Default: ``MySQLdb.cursors.Cursor``.  *This
             must be a keyword parameter.*
 
+         executemany_fallback
+            Controls how ``Cursor.executemany()`` handles statements that
+            cannot use the multi-row INSERT/REPLACE optimization. ``"loop"``
+            executes the statements one at a time and is the default.
+            ``"multi"`` may combine safe data manipulation statements into a
+            multi-statement query. If multi-statements are disabled or a query
+            is not eligible, execution silently falls back to ``"loop"``.
+
+            This is a connection option so it can be passed through, for
+            example, SQLAlchemy's ``connect_args`` or Django's database
+            ``OPTIONS``::
+
+                create_engine(
+                    "mysql+mysqldb://user:password@host/database",
+                    connect_args={"executemany_fallback": "multi"},
+                )
+
+                DATABASES["default"]["OPTIONS"]["executemany_fallback"] = "multi"
+
+            See ``executemany()`` below for batching and transaction details.
+
          use_unicode
             If True, CHAR and VARCHAR and TEXT columns are returned as
             Unicode strings, using the configured character set. It is
@@ -561,6 +583,34 @@ close()
       If you are using server-side cursors, it is very important to
       close the cursor when you are done with it and before creating a
       new one.
+
+executemany(operation, seq_of_params)
+      Executes an operation for every parameter set and returns the total
+      number of affected rows. Multi-row INSERT and REPLACE statements use
+      MySQLdb's existing single-statement ``VALUES`` rewrite whenever it
+      applies, independently of ``executemany_fallback``.
+
+      With ``executemany_fallback="multi"``, statements that do not match that
+      rewrite may instead be sent in multi-statement batches. This applies only
+      to SQL templates which begin with INSERT, REPLACE, UPDATE, or DELETE
+      (ignoring leading whitespace), contain no semicolon, and contain no
+      ``RETURNING`` clause. Other statements, including statements beginning
+      with a comment or ``WITH``, use the normal loop. The loop is also used
+      silently when the connection does not have multi-statements enabled.
+      Calling ``set_server_option()`` to change multi-statement support at
+      runtime also disables this batching for the lifetime of that connection;
+      this avoids relying on state that an automatic reconnect may reset.
+
+      Each batch is limited to 1600 encoded bytes, including separators, and
+      200 statements. A single rendered statement exceeding the byte limit is
+      executed alone. On successful completion, ``rowcount`` and the return
+      value are the sum of the affected-row counts for all statements.
+
+      Batching does not create an implicit transaction and is not atomic. If a
+      statement fails, statements before it may already have executed, while
+      statements after it do not execute. Applications needing all-or-nothing
+      behavior must manage a transaction explicitly; with autocommit enabled,
+      each statement may be committed independently.
 
 info()
       Returns some information about the last query. Normally

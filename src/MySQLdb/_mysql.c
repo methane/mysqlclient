@@ -888,6 +888,25 @@ Returns 0 if there are more results; -1 if there are no more results\n\
 \n\
 Non-standard.\n\
 ";
+
+static char _mysql_ConnectionObject_more_results__doc__[] =
+"Returns True if one or more results follow the current result of a\n\
+multi-statement query. This check does not advance to the next result.\n\
+\n\
+Non-standard.\n\
+";
+
+static PyObject *
+_mysql_ConnectionObject_more_results(
+    _mysql_ConnectionObject *self,
+    PyObject *noargs)
+{
+    check_connection(self);
+    if (mysql_more_results(&(self->connection)))
+        Py_RETURN_TRUE;
+    Py_RETURN_FALSE;
+}
+
 static PyObject *
 _mysql_ConnectionObject_next_result(
     _mysql_ConnectionObject *self,
@@ -2318,6 +2337,12 @@ static PyMethodDef _mysql_ConnectionObject_methods[] = {
         (PyCFunction)_mysql_ConnectionObject_rollback,
         METH_NOARGS,
         _mysql_ConnectionObject_rollback__doc__
+    },
+    {
+        "more_results",
+        (PyCFunction)_mysql_ConnectionObject_more_results,
+        METH_NOARGS,
+        _mysql_ConnectionObject_more_results__doc__
     },
     {
         "next_result",

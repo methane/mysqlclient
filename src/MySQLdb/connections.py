@@ -52,6 +52,7 @@ class Connection(_mysql.connection):
     """MySQL Database Connection Object"""
 
     default_cursor = cursors.Cursor
+    executemany_fallback = "loop"
 
     def __init__(self, *args, **kwargs):
         """
@@ -122,6 +123,13 @@ class Connection(_mysql.connection):
             If True, enable multi statements for clients >= 4.1.
             Defaults to True.
 
+        :param str executemany_fallback:
+            Controls how ``Cursor.executemany()`` executes statements which
+            cannot use the multi-row INSERT/REPLACE optimization. ``"loop"``
+            executes each statement separately (the default), while
+            ``"multi"`` batches safe data manipulation statements into a
+            multi-statement query when multi statements are enabled.
+
         :param str ssl_mode:
             specify the security settings for connection to the server;
             see the MySQL documentation for more details
@@ -191,6 +199,13 @@ class Connection(_mysql.connection):
         use_unicode = kwargs2.pop("use_unicode", True)
         sql_mode = kwargs2.pop("sql_mode", "")
         self._binary_prefix = kwargs2.pop("binary_prefix", False)
+        executemany_fallback = kwargs2.pop(
+            "executemany_fallback", self.executemany_fallback
+        )
+        if executemany_fallback not in ("loop", "multi"):
+            raise ValueError(
+                "executemany_fallback must be either 'loop' or 'multi'"
+            )
 
         client_flag = kwargs.get("client_flag", 0)
         client_flag |= CLIENT.MULTI_RESULTS
@@ -206,6 +221,10 @@ class Connection(_mysql.connection):
         super().__init__(*args, **kwargs2)
 
         self.cursorclass = cursorclass
+        self.executemany_fallback = executemany_fallback
+        self._executemany_multi_enabled = bool(
+            self.client_flag & CLIENT.MULTI_STATEMENTS
+        )
         self.encoders = {
             k: v
             for k, v in conv.items()
@@ -278,6 +297,21 @@ class Connection(_mysql.connection):
         used.
         """
         return (cursorclass or self.cursorclass)(self)
+
+    def set_server_option(self, option):
+        """Set a server option.
+
+        Toggling multi statements at runtime disables multi-statement
+        ``executemany`` batching on this connection, because an automatic
+        reconnect may restore the initial capability state.
+        """
+        result = _mysql.connection.set_server_option(self, option)
+        # enum_mysql_set_option values from mysql.h. Runtime changes are not
+        # restored reliably after an automatic reconnect, so disable
+        # executemany batching permanently after either multi-statement toggle.
+        if option in (0, 1):  # MYSQL_OPTION_MULTI_STATEMENTS_ON/OFF
+            self._executemany_multi_enabled = False
+        return result
 
     def query(self, query):
         # Since _mysql releases GIL while querying, we need immutable buffer.
