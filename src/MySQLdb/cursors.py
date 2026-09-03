@@ -276,7 +276,8 @@ class BaseCursor:
         statements if the connection has multi statements enabled. Otherwise,
         it is equivalent to looping over args with execute().
         """
-        if not args:
+        args_count = len(args)
+        if not args_count:
             return
 
         m = _match_insert_values(query)
@@ -307,39 +308,21 @@ class BaseCursor:
             and db.client_flag & CLIENT.MULTI_STATEMENTS
             and _is_executemany_dml(query)
         ):
+            if args_count == 1:
+                return self.execute(query, args[0])
             return self._do_execute_many_multi(query, args)
 
         self.rowcount = sum(self.execute(query, arg) for arg in args)
         return self.rowcount
 
     def _do_execute_many_multi(self, query, args):
-        args = iter(args)
-        try:
-            first_arg = next(args)
-        except StopIteration:
-            self.rowcount = 0
-            return 0
-
-        try:
-            second_arg = next(args)
-        except StopIteration:
-            # Preserve the normal execute path for a single parameter set.
-            return self.execute(query, first_arg)
-
         rows = 0
         statement_count = 1
-        sql = bytearray(self._mogrify(query, first_arg))
+        sql = bytearray(self._mogrify(query, args[0]))
 
-        def remaining_args():
-            yield second_arg
-            yield from args
-
-        for arg in remaining_args():
+        for arg in args[1:]:
             statement = self._mogrify(query, arg)
-            if not statement_count:
-                sql += statement
-                statement_count = 1
-            elif (
+            if (
                 statement_count >= self.max_multi_stmt_count
                 or len(sql) + len(_EXECUTEMANY_MULTI_SEPARATOR) + len(statement)
                 > self.max_multi_stmt_length
@@ -353,19 +336,7 @@ class BaseCursor:
                 sql += _EXECUTEMANY_MULTI_SEPARATOR
                 sql += statement
                 statement_count += 1
-
-            if (
-                statement_count >= self.max_multi_stmt_count
-                or len(sql) > self.max_multi_stmt_length
-            ):
-                rows += self._execute_multi_statement_batch(
-                    bytes(sql), statement_count
-                )
-                sql.clear()
-                statement_count = 0
-
-        if statement_count:
-            rows += self._execute_multi_statement_batch(bytes(sql), statement_count)
+        rows += self._execute_multi_statement_batch(bytes(sql), statement_count)
         self.rowcount = rows
         return rows
 

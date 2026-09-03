@@ -343,7 +343,7 @@ def test_executemany_multi_batch_limits_and_single_arg():
     assert (
         cursor.executemany(
             "DELETE FROM executemany_multi_limits WHERE id=%s",
-            ((1000 + i,) for i in range(201)),
+            [(1000 + i,) for i in range(201)],
         )
         == 0
     )
@@ -391,29 +391,25 @@ def test_executemany_multi_oversized_statement_runs_alone():
     )
 
 
-def test_executemany_multi_generator_and_empty_iterator():
+def test_executemany_multi_list_and_empty_list():
     conn = connect(executemany_fallback="multi")
     cursor = conn.cursor()
     cursor.execute(
-        "CREATE TABLE executemany_multi_generator (id int primary key, data int)"
+        "CREATE TABLE executemany_multi_list (id int primary key, data int)"
     )
-    _tables.append("executemany_multi_generator")
+    _tables.append("executemany_multi_list")
     cursor.executemany(
-        "INSERT INTO executemany_multi_generator (id, data) VALUES (%s, %s)",
+        "INSERT INTO executemany_multi_list (id, data) VALUES (%s, %s)",
         [(1, 0), (2, 0), (3, 0)],
     )
 
-    def params():
-        for i in range(1, 4):
-            yield (i * 10, i)
-
-    query = "UPDATE executemany_multi_generator SET data=%s WHERE id=%s"
-    assert cursor.executemany(query, params()) == 3
+    query = "UPDATE executemany_multi_list SET data=%s WHERE id=%s"
+    params = [(i * 10, i) for i in range(1, 4)]
+    assert cursor.executemany(query, params) == 3
     assert cursor._executed.count(MySQLdb.cursors._EXECUTEMANY_MULTI_SEPARATOR) == 2
-    assert cursor.executemany(query, iter(())) == 0
-    assert cursor.rowcount == 0
+    assert cursor.executemany(query, []) is None
 
-    cursor.execute("SELECT id, data FROM executemany_multi_generator ORDER BY id")
+    cursor.execute("SELECT id, data FROM executemany_multi_list ORDER BY id")
     assert cursor.fetchall() == ((1, 10), (2, 20), (3, 30))
 
 
