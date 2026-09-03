@@ -298,7 +298,7 @@ def test_executemany_multi_batch_limits_and_single_arg():
     cursor = conn.cursor(RecordingCursor)
     cursor.execute(
         "CREATE TABLE executemany_multi_limits "
-        "(id int primary key, data varchar(2000))"
+        "(id int primary key, data text)"
     )
     _tables.append("executemany_multi_limits")
     cursor.executemany(
@@ -323,18 +323,18 @@ def test_executemany_multi_batch_limits_and_single_arg():
     first_statement = cursor._mogrify(query, first_arg)
     second_base_statement = cursor._mogrify(query, second_base_arg)
     filler_length = (
-        1600
+        16_000
         - len(first_statement)
         - len(MySQLdb.cursors._EXECUTEMANY_MULTI_SEPARATOR)
         - len(second_base_statement)
     )
     boundary_args = [first_arg, ("x" * filler_length, 2), ("c", 3)]
     cursor.max_multi_stmt_count = 200
-    cursor.max_multi_stmt_length = 1600
+    cursor.max_multi_stmt_length = 16_000
     cursor.execute_calls.clear()
     assert cursor.executemany(query, boundary_args) == 3
     assert len(cursor.execute_calls) == 2
-    assert len(cursor.execute_calls[0][0]) == 1600
+    assert len(cursor.execute_calls[0][0]) == 16_000
 
     cursor.max_multi_stmt_length = 1_000_000
     cursor.max_multi_stmt_count = 200
@@ -357,7 +357,7 @@ def test_executemany_multi_batch_limits_and_single_arg():
     assert cursor.executemany(query, [arg]) == 1
     assert cursor.execute_calls == [(query, arg)]
 
-    assert MySQLdb.cursors.BaseCursor.max_multi_stmt_length == 1600
+    assert MySQLdb.cursors.BaseCursor.max_multi_stmt_length == 16_000
     assert MySQLdb.cursors.BaseCursor.max_multi_stmt_count == 200
 
 

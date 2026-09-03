@@ -6,7 +6,7 @@ default, MySQLdb uses the Cursor class.
 import re
 
 from ._exceptions import ProgrammingError
-from .constants import CR
+from .constants import CLIENT, CR
 
 
 _EXECUTEMANY_MULTI_SEPARATOR = b"\n;\n"
@@ -87,7 +87,7 @@ class BaseCursor:
     #: Maximum encoded size and statement count for multi-statement
     #: ``executemany`` fallback batches. The size includes separators and is
     #: measured after argument conversion. Subclasses may override them.
-    max_multi_stmt_length = 1600
+    max_multi_stmt_length = 16_000
     max_multi_stmt_count = 200
 
     #: Override with ``"loop"`` or ``"multi"`` on a cursor subclass or
@@ -306,7 +306,7 @@ class BaseCursor:
 
         if (
             fallback == "multi"
-            and getattr(db, "_executemany_multi_enabled", False)
+            and db.client_flag & CLIENT.MULTI_STATEMENTS
             and _is_executemany_dml(query)
         ):
             return self._do_execute_many_multi(query, args)

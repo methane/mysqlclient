@@ -597,11 +597,8 @@ executemany(operation, seq_of_params)
       ``RETURNING`` clause. Other statements, including statements beginning
       with a comment or ``WITH``, use the normal loop. The loop is also used
       silently when the connection does not have multi-statements enabled.
-      Calling ``set_server_option()`` to change multi-statement support at
-      runtime also disables this batching for the lifetime of that connection;
-      this avoids relying on state that an automatic reconnect may reset.
 
-      Each batch is limited to 1600 encoded bytes, including separators, and
+      Each batch is limited to 16000 encoded bytes, including separators, and
       200 statements. A single rendered statement exceeding the byte limit is
       executed alone. On successful completion, ``rowcount`` and the return
       value are the sum of the affected-row counts for all statements.
