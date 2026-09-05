@@ -4,20 +4,21 @@ only one class: Connection. Others are unlikely. However, you might
 want to make your own subclasses. In most cases, you will probably
 override Connection.default_cursor with a non-standard Cursor class.
 """
+
 import re
 
-from . import cursors, _mysql
+from . import _mysql, cursors
 from ._exceptions import (
-    Warning,
-    Error,
-    InterfaceError,
-    DataError,
     DatabaseError,
-    OperationalError,
+    DataError,
+    Error,
     IntegrityError,
+    InterfaceError,
     InternalError,
     NotSupportedError,
+    OperationalError,
     ProgrammingError,
+    Warning,
 )
 
 # Mapping from MySQL charset name to Python codec name
@@ -151,11 +152,11 @@ class Connection(_mysql.connection):
 
         :param bool local_infile:
             sets ``MYSQL_OPT_LOCAL_INFILE`` in ``mysql_options()`` enabling LOAD LOCAL INFILE from any path; zero disables;
-            
+
         :param str local_infile_dir:
-            sets ``MYSQL_OPT_LOAD_DATA_LOCAL_DIR`` in ``mysql_options()`` enabling LOAD LOCAL INFILE from any path; 
+            sets ``MYSQL_OPT_LOAD_DATA_LOCAL_DIR`` in ``mysql_options()`` enabling LOAD LOCAL INFILE from any path;
             if ``local_infile`` is set to ``True`` then this is ignored;
-            
+
             supported for mysql version >= 8.0.21
 
         :param bool autocommit:
@@ -171,7 +172,7 @@ class Connection(_mysql.connection):
         documentation for the MySQL C API for some hints on what they do.
         """
         from MySQLdb.constants import CLIENT, FIELD_TYPE
-        from MySQLdb.converters import conversions, _bytes_or_str
+        from MySQLdb.converters import _bytes_or_str, conversions
 
         kwargs2 = kwargs.copy()
 
@@ -180,11 +181,7 @@ class Connection(_mysql.connection):
         if "passwd" in kwargs2:
             kwargs2["password"] = kwargs2.pop("passwd")
 
-        if "conv" in kwargs:
-            conv = kwargs["conv"]
-        else:
-            conv = conversions
-
+        conv = kwargs.get("conv", conversions)
         conv2 = {}
         for k, v in conv.items():
             if isinstance(k, int) and isinstance(v, list):
@@ -222,11 +219,7 @@ class Connection(_mysql.connection):
 
         self.cursorclass = cursorclass
         self.executemany_fallback = executemany_fallback
-        self.encoders = {
-            k: v
-            for k, v in conv.items()
-            if type(k) is not int  # noqa: E721
-        }
+        self.encoders = {k: v for k, v in conv.items() if type(k) is not int}
         self._server_version = tuple(
             [numeric_part(n) for n in self.get_server_info().split(".")[:2]]
         )
@@ -255,13 +248,20 @@ class Connection(_mysql.connection):
             self.converter[FIELD_TYPE.JSON] = str
 
         self._transactional = self.server_capabilities & CLIENT.TRANSACTIONS
-        if self._transactional:
-            if autocommit is not None:
-                self.autocommit(autocommit)
+        if self._transactional and autocommit is not None:
+            self.autocommit(autocommit)
         self.messages = []
 
-    def _set_attributes(self, host=None, user=None, password=None, database="", port=3306,
-                        unix_socket=None, **kwargs):
+    def _set_attributes(
+        self,
+        host=None,
+        user=None,
+        password=None,
+        database="",
+        port=3306,
+        unix_socket=None,
+        **kwargs,
+    ):
         """set some attributes for otel"""
         if unix_socket and not host:
             host = "localhost"
@@ -321,9 +321,7 @@ class Connection(_mysql.connection):
         """
         if isinstance(o, str):
             s = self.string_literal(o.encode(self.encoding))
-        elif isinstance(o, bytearray):
-            s = self._bytes_literal(o)
-        elif isinstance(o, bytes):
+        elif isinstance(o, (bytes, bytearray)):
             s = self._bytes_literal(o)
         elif isinstance(o, (tuple, list)):
             s = self._tuple_literal(o)

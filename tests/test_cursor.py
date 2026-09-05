@@ -1,9 +1,12 @@
+from textwrap import dedent
+
 import pytest
-import MySQLdb.cursors
-from MySQLdb._exceptions import IntegrityError, InternalError, OperationalError
-from MySQLdb.converters import conversions
 from configdb import connection_factory
 
+import MySQLdb.cursors
+from MySQLdb._exceptions import IntegrityError, InternalError, OperationalError
+from MySQLdb.constants import ER
+from MySQLdb.converters import conversions
 
 _conns = []
 _tables = []
@@ -58,9 +61,9 @@ def test_executemany():
         "INSERT INTO TEST (ID, NAME) VALUES (%(id_name)s, %(name)s) ON duplicate update"
     )
     assert m is not None, "error parse %(id_name)s"
-    assert (
-        m.group(3) == " ON duplicate update"
-    ), "group 3 not ON duplicate update, bug in _RE_INSERT_VALUES?"
+    assert m.group(3) == " ON duplicate update", (
+        "group 3 not ON duplicate update, bug in _RE_INSERT_VALUES?"
+    )
 
     # https://github.com/PyMySQL/mysqlclient-python/issues/178
     m = MySQLdb.cursors._RE_INSERT_VALUES.match(
@@ -76,9 +79,9 @@ def test_executemany():
     # list args
     data = [(i,) for i in range(10)]
     cursor.executemany("insert into test (data) values (%s)", data)
-    assert cursor._executed.endswith(
-        b",(7),(8),(9)"
-    ), "execute many with %s not in one query"
+    assert cursor._executed.endswith(b",(7),(8),(9)"), (
+        "execute many with %s not in one query"
+    )
 
     # bytes and bytearray queries use the same INSERT/REPLACE fast path.
     cursor.executemany(b"insert into test (data) values (%s)", [(10,), (11,)])
@@ -91,9 +94,9 @@ def test_executemany():
     # dict args
     data_dict = [{"data": i} for i in range(10)]
     cursor.executemany("insert into test (data) values (%(data)s)", data_dict)
-    assert cursor._executed.endswith(
-        b",(7),(8),(9)"
-    ), "execute many with %(data)s not in one query"
+    assert cursor._executed.endswith(b",(7),(8),(9)"), (
+        "execute many with %(data)s not in one query"
+    )
 
     # %% in column set
     cursor.execute(
@@ -106,9 +109,9 @@ def test_executemany():
         q = "INSERT INTO percent_test (`A%%`, `B%%`) VALUES (%s, %s)"
         assert MySQLdb.cursors._RE_INSERT_VALUES.match(q) is not None
         cursor.executemany(q, [(3, 4), (5, 6)])
-        assert cursor._executed.endswith(
-            b"(3, 4),(5, 6)"
-        ), "executemany with %% not in one query"
+        assert cursor._executed.endswith(b"(3, 4),(5, 6)"), (
+            "executemany with %% not in one query"
+        )
     finally:
         cursor.execute("DROP TABLE IF EXISTS percent_test")
 
@@ -659,3 +662,88 @@ CREATE TABLE test_binary_prefix (
         "INSERT INTO test_binary_prefix (id, json) VALUES (%(id)s, %(json)s)",
         ({"id": 1, "json": "{}"}, {"id": 2, "json": "{}"}),
     )
+
+
+def test_warning_count():
+    conn = connect()
+    cursor = conn.cursor()
+
+    cursor.execute("DROP TABLE IF EXISTS `no_exists_table`")
+    assert cursor.warning_count == 1
+
+    cursor.execute("SHOW WARNINGS")
+    warning = cursor.fetchone()
+    assert warning[1] == ER.BAD_TABLE_ERROR
+    assert "no_exists_table" in warning[2]
+
+    cursor.execute("SELECT 1")
+    assert cursor.warning_count == 0
+
+
+def test_sscursor_warning_count():
+    conn = connect()
+    cursor = conn.cursor(MySQLdb.cursors.SSCursor)
+
+    cursor.execute("DROP TABLE IF EXISTS `no_exists_table`")
+    assert cursor.warning_count == 1
+
+    cursor.execute("SHOW WARNINGS")
+    warning = cursor.fetchone()
+    assert warning[1] == ER.BAD_TABLE_ERROR
+    assert "no_exists_table" in warning[2]
+    assert cursor.fetchone() is None
+
+    cursor.execute("SELECT 1")
+    assert cursor.fetchone() == (1,)
+    assert cursor.fetchone() is None
+    assert cursor.warning_count == 0
+
+    cursor.execute("SELECT CAST('abc' AS SIGNED)")
+    rows = cursor.fetchmany(2)
+    assert len(rows) == 1
+    assert cursor.warning_count == 1
+
+
+@pytest.mark.parametrize("Cursor", [MySQLdb.cursors.Cursor, MySQLdb.cursors.SSCursor])
+def test_cursor_is_iterator(Cursor):
+    conn = connect()
+    cursor = conn.cursor(Cursor)
+
+    cursor.execute("DROP TABLE IF EXISTS test_cursor_is_iterator")
+    cursor.execute(
+        "CREATE TABLE test_cursor_is_iterator (id INT PRIMARY KEY, name VARCHAR(20))"
+    )
+    _tables.append("test_cursor_is_iterator")
+    cursor.executemany(
+        "INSERT INTO test_cursor_is_iterator (id, name) VALUES (%s, %s)",
+        [(1, "a"), (2, "b"), (3, "c")],
+    )
+
+    cursor.execute("SELECT name FROM test_cursor_is_iterator ORDER BY id")
+    assert iter(cursor) is cursor
+    assert next(cursor) == ("a",)
+    assert next(cursor) == ("b",)
+    assert next(cursor) == ("c",)
+    with pytest.raises(StopIteration):
+        next(cursor)
+
+
+def test_callproc_escaping():
+    conn = connect()
+    cur = conn.cursor()
+
+    cur.execute("DROP PROCEDURE IF EXISTS `foo.bar`")
+    try:
+        cur.execute(
+            dedent("""\
+            create procedure `foo.bar` (arg1 int)
+            begin
+                select arg1*2;
+            end
+        """)
+        )
+
+        cur.callproc("foo.bar", args=(123,))
+        assert cur.fetchone()[0] == 246
+    finally:
+        cur.execute("DROP PROCEDURE IF EXISTS `foo.bar`")

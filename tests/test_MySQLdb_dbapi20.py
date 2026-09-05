@@ -1,9 +1,11 @@
 #!/usr/bin/env python
-import dbapi20
 import unittest
-import MySQLdb
-from configdb import connection_kwargs
 import warnings
+
+import dbapi20
+from configdb import connection_kwargs
+
+import MySQLdb
 
 warnings.simplefilter("ignore")
 
@@ -12,7 +14,7 @@ class test_MySQLdb(dbapi20.DatabaseAPI20Test):
     driver = MySQLdb
     connect_args = ()
     connect_kw_args = connection_kwargs(
-        dict(sql_mode="ANSI,STRICT_TRANS_TABLES,TRADITIONAL")
+        {"sql_mode": "ANSI,STRICT_TRANS_TABLES,TRADITIONAL"}
     )
 
     def test_setoutputsize(self):
@@ -53,7 +55,7 @@ class test_MySQLdb(dbapi20.DatabaseAPI20Test):
             )
             rows = [r[0] for r in rows]
             rows.sort()
-            for i in range(0, len(self.samples)):
+            for i in range(len(self.samples)):
                 self.assertEqual(
                     rows[i], self.samples[i], "cursor.fetchall retrieved incorrect rows"
                 )
@@ -98,7 +100,7 @@ class test_MySQLdb(dbapi20.DatabaseAPI20Test):
             self.assertEqual(
                 cur.fetchone(),
                 None,
-                "cursor.fetchone should return None if a query retrieves " "no rows",
+                "cursor.fetchone should return None if a query retrieves no rows",
             )
             self.assertTrue(cur.rowcount in (-1, 0))
 
@@ -172,9 +174,7 @@ class test_MySQLdb(dbapi20.DatabaseAPI20Test):
                select count(*) from %(tp)sbooze;
                select name from %(tp)sbooze;
            end
-        """ % dict(
-            tp=self.table_prefix
-        )
+        """ % {"tp": self.table_prefix}
         cur.execute(sql)
 
     def help_nextset_tearDown(self, cur):

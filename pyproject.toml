@@ -48,8 +48,3 @@ include = ["MySQLdb*"]
 
 [tool.setuptools.dynamic]
 version = {attr = "MySQLdb.release.__version__"}
-
-[tool.ruff.lint]
-# Ruff 0.16 expanded its default rule set. Keep the checks used by this project
-# before that change explicit so CI does not depend on the installed Ruff version.
-select = ["E4", "E7", "E9", "F"]

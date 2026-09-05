@@ -1,22 +1,22 @@
 #!/usr/bin/env python
-""" Python DB API 2.0 driver compliance unit test suite.
+"""Python DB API 2.0 driver compliance unit test suite.
 
-    This software is Public Domain and may be used without restrictions.
+   This software is Public Domain and may be used without restrictions.
 
- "Now we have booze and barflies entering the discussion, plus rumours of
-  DBAs on drugs... and I won't tell you what flashes through my mind each
-  time I read the subject line with 'Anal Compliance' in it.  All around
-  this is turning out to be a thoroughly unwholesome unit test."
+"Now we have booze and barflies entering the discussion, plus rumours of
+ DBAs on drugs... and I won't tell you what flashes through my mind each
+ time I read the subject line with 'Anal Compliance' in it.  All around
+ this is turning out to be a thoroughly unwholesome unit test."
 
-    -- Ian Bicking
+   -- Ian Bicking
 """
 
 __rcs_id__ = "$Id$"
 __version__ = "$Revision$"[11:-2]
 __author__ = "Stuart Bishop <zen@shangri-la.dropbear.id.au>"
 
-import unittest
 import time
+import unittest
 
 # $Log$
 # Revision 1.1.2.1  2006/02/25 03:44:32  adustman
@@ -113,7 +113,6 @@ class DatabaseAPI20Test(unittest.TestCase):
         """self.drivers should override this method to perform required setup
         if any is necessary, such as creating the database.
         """
-        pass
 
     def tearDown(self):
         """self.drivers should override this method to perform required cleanup
@@ -300,7 +299,7 @@ class DatabaseAPI20Test(unittest.TestCase):
             self.assertEqual(
                 cur.rowcount,
                 -1,
-                "cursor.rowcount should be -1 after executing no-result " "statements",
+                "cursor.rowcount should be -1 after executing no-result statements",
             )
             cur.execute(
                 "insert into %sbooze values ('Victoria Bitter')" % (self.table_prefix)
@@ -410,12 +409,12 @@ class DatabaseAPI20Test(unittest.TestCase):
         self.assertEqual(
             beers[0],
             "Cooper's",
-            "cursor.fetchall retrieved incorrect data, or data inserted " "incorrectly",
+            "cursor.fetchall retrieved incorrect data, or data inserted incorrectly",
         )
         self.assertEqual(
             beers[1],
             "Victoria Bitter",
-            "cursor.fetchall retrieved incorrect data, or data inserted " "incorrectly",
+            "cursor.fetchall retrieved incorrect data, or data inserted incorrectly",
         )
 
     def test_executemany(self):
@@ -483,7 +482,7 @@ class DatabaseAPI20Test(unittest.TestCase):
             self.assertEqual(
                 cur.fetchone(),
                 None,
-                "cursor.fetchone should return None if a query retrieves " "no rows",
+                "cursor.fetchone should return None if a query retrieves no rows",
             )
             self.assertTrue(cur.rowcount in (-1, 0))
 
@@ -591,7 +590,7 @@ class DatabaseAPI20Test(unittest.TestCase):
             rows.sort()
 
             # Make sure we get the right data back out
-            for i in range(0, 6):
+            for i in range(6):
                 self.assertEqual(
                     rows[i],
                     self.samples[i],
@@ -648,7 +647,7 @@ class DatabaseAPI20Test(unittest.TestCase):
             )
             rows = [r[0] for r in rows]
             rows.sort()
-            for i in range(0, len(self.samples)):
+            for i in range(len(self.samples)):
                 self.assertEqual(
                     rows[i], self.samples[i], "cursor.fetchall retrieved incorrect rows"
                 )
@@ -701,7 +700,7 @@ class DatabaseAPI20Test(unittest.TestCase):
             rows.append(rows4[0])
             rows.extend([rows56[0][0], rows56[1][0]])
             rows.sort()
-            for i in range(0, len(self.samples)):
+            for i in range(len(self.samples)):
                 self.assertEqual(
                     rows[i], self.samples[i], "incorrect data retrieved or inserted"
                 )
