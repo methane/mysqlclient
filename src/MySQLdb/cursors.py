@@ -278,6 +278,7 @@ class BaseCursor:
         statements if the connection has multi statements enabled. Otherwise,
         it is equivalent to looping over args with execute().
         """
+        args = list(args)
         args_count = len(args)
         if not args_count:
             return
