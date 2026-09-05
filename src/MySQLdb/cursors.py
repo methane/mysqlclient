@@ -14,7 +14,7 @@ _EXECUTEMANY_MULTI_SEPARATOR = b"\n;\n"
 #: Regular expression for ``Cursor.executemany```.
 #: executemany only supports simple bulk insert.
 #: You can use it to load large dataset.
-_RE_INSERT_VALUES = re.compile(
+RE_INSERT_VALUES = re.compile(
     "".join(
         [
             r"\s*((?:INSERT|REPLACE)\b.+\bVALUES?\s*)",
@@ -26,7 +26,7 @@ _RE_INSERT_VALUES = re.compile(
 )
 
 _RE_INSERT_VALUES_BYTES = re.compile(
-    _RE_INSERT_VALUES.pattern.encode("ascii"), re.IGNORECASE | re.DOTALL
+    RE_INSERT_VALUES.pattern.encode("ascii"), re.IGNORECASE | re.DOTALL
 )
 _RE_EXECUTEMANY_DML = re.compile(
     r"\s*(?:INSERT|REPLACE|UPDATE|DELETE)\b", re.IGNORECASE
@@ -43,7 +43,7 @@ _RE_RETURNING_BYTES = re.compile(
 def _match_insert_values(query):
     if isinstance(query, (bytes, bytearray)):
         return _RE_INSERT_VALUES_BYTES.match(query)
-    return _RE_INSERT_VALUES.match(query)
+    return RE_INSERT_VALUES.match(query)
 
 
 def _is_executemany_dml(query):
