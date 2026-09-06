@@ -53,6 +53,11 @@ jobs:
         run: |
           pip install -r requirements.txt
 
+      - if: ${{ matrix.python-version == '3.12' || matrix.mariadb }}
+        name: Install SQLAlchemy
+        run: |
+          pip install "SQLAlchemy>=2,<3"
+
       - name: Run tests
         env:
           TESTDB: actions.cnf
@@ -99,10 +104,11 @@ jobs:
           wget https://github.com/django/django/archive/${DJANGO_VERSION}.tar.gz
           tar xf ${DJANGO_VERSION}.tar.gz
           cp ci/test_mysql.py django-${DJANGO_VERSION}/tests/
+          cp ci/test_mysql_executemany_multi.py django-${DJANGO_VERSION}/tests/
           cd django-${DJANGO_VERSION}
           pip install . -r tests/requirements/py3.txt
 
       - name: Run Django test
         run: |
           cd django-${DJANGO_VERSION}/tests/
-          PYTHONPATH=.. python3 ./runtests.py --settings=test_mysql
+          PYTHONPATH=.. python3 ./runtests.py --settings=test_mysql_executemany_multi

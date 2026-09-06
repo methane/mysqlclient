@@ -6,7 +6,10 @@ default, MySQLdb uses the Cursor class.
 
 import re
 
-from ._exceptions import ProgrammingError
+from ._exceptions import InternalError, MySQLError, ProgrammingError
+from .constants import CLIENT, CR
+
+_EXECUTEMANY_MULTI_SEPARATOR = b"\n;\n"
 
 #: Regular expression for ``Cursor.executemany```.
 #: executemany only supports simple bulk insert.
@@ -21,6 +24,41 @@ RE_INSERT_VALUES = re.compile(
     ),
     re.IGNORECASE | re.DOTALL,
 )
+
+_RE_INSERT_VALUES_BYTES = re.compile(
+    RE_INSERT_VALUES.pattern.encode("ascii"), re.IGNORECASE | re.DOTALL
+)
+_RE_EXECUTEMANY_DML = re.compile(
+    r"\s*(?:INSERT|REPLACE|UPDATE|DELETE)\b", re.IGNORECASE
+)
+_RE_EXECUTEMANY_DML_BYTES = re.compile(
+    _RE_EXECUTEMANY_DML.pattern.encode("ascii"), re.IGNORECASE
+)
+_RE_RETURNING = re.compile(r"\bRETURNING\b", re.IGNORECASE)
+_RE_RETURNING_BYTES = re.compile(
+    _RE_RETURNING.pattern.encode("ascii"), re.IGNORECASE
+)
+
+
+def _match_insert_values(query):
+    if isinstance(query, (bytes, bytearray)):
+        return _RE_INSERT_VALUES_BYTES.match(query)
+    return RE_INSERT_VALUES.match(query)
+
+
+def _is_executemany_dml(query):
+    """Return whether query is safe for client-side multi-statement batching."""
+    if isinstance(query, (bytes, bytearray)):
+        return (
+            b";" not in query
+            and _RE_EXECUTEMANY_DML_BYTES.match(query) is not None
+            and _RE_RETURNING_BYTES.search(query) is None
+        )
+    return (
+        ";" not in query
+        and _RE_EXECUTEMANY_DML.match(query) is not None
+        and _RE_RETURNING.search(query) is None
+    )
 
 
 def _backquote_escape(s):
@@ -49,6 +87,16 @@ class BaseCursor:
     #: Max size of allowed statement is max_allowed_packet - packet_header_size.
     #: Default value of max_allowed_packet is 1048576.
     max_stmt_length = 64 * 1024
+
+    #: Maximum encoded size and statement count for multi-statement
+    #: ``executemany`` fallback batches. The size includes separators and is
+    #: measured after argument conversion. Subclasses may override them.
+    max_multi_stmt_length = 16_000
+    max_multi_stmt_count = 200
+
+    #: Override with ``"loop"`` or ``"multi"`` on a cursor subclass or
+    #: instance. ``None`` inherits the policy from the connection.
+    executemany_fallback = None
 
     connection = None
 
@@ -217,19 +265,21 @@ class BaseCursor:
         :param args:  Sequence of sequences or mappings.  It is used as parameter.
         :return: Number of rows affected, if any.
 
-        This method improves performance on multiple-row INSERT and
-        REPLACE. Otherwise it is equivalent to looping over args with
-        execute().
+        This method improves performance on multiple-row INSERT and REPLACE.
+        When ``executemany_fallback`` is ``"multi"``, it also batches safe DML
+        statements if the connection has multi statements enabled. Otherwise,
+        it is equivalent to looping over args with execute().
         """
         if not args:
             return
 
-        m = RE_INSERT_VALUES.match(query)
+        m = _match_insert_values(query)
         if m:
             q_prefix = m.group(1) % ()
             q_values = m.group(2).rstrip()
             q_postfix = m.group(3) or ""
-            assert q_values[0] == "(" and q_values[-1] == ")"
+            assert q_values[:1] in ("(", b"(")
+            assert q_values[-1:] in (")", b")")
             return self._do_execute_many(
                 q_prefix,
                 q_values,
@@ -239,8 +289,128 @@ class BaseCursor:
                 self._get_db().encoding,
             )
 
-        self.rowcount = sum(self.execute(query, arg) for arg in args)
+        fallback = self.executemany_fallback
+        db = self._get_db()
+        if fallback is None:
+            fallback = getattr(db, "executemany_fallback", "loop")
+        if fallback not in ("loop", "multi"):
+            raise ValueError("executemany_fallback must be either 'loop' or 'multi'")
+
+        if (
+            fallback == "multi"
+            and db.client_flag & CLIENT.MULTI_STATEMENTS
+            and _is_executemany_dml(query)
+        ):
+            return self._do_execute_many_multi(query, args)
+
+        rows = None
+        for arg in args:
+            result = self.execute(query, arg)
+            rows = result if rows is None else rows + result
+        if rows is None:
+            return
+        self.rowcount = rows
         return self.rowcount
+
+    def _do_execute_many_multi(self, query, args):
+        rows = 0
+        statement_count = 0
+        sql = bytearray()
+
+        for arg in args:
+            statement = self._mogrify(query, arg)
+            if statement_count and (
+                statement_count >= self.max_multi_stmt_count
+                or len(sql) + len(_EXECUTEMANY_MULTI_SEPARATOR) + len(statement)
+                > self.max_multi_stmt_length
+            ):
+                rows += self._execute_multi_statement_batch(
+                    bytes(sql), statement_count
+                )
+                sql.clear()
+                statement_count = 0
+            if statement_count:
+                sql += _EXECUTEMANY_MULTI_SEPARATOR
+            sql += statement
+            statement_count += 1
+        if not statement_count:
+            return
+        rows += self._execute_multi_statement_batch(bytes(sql), statement_count)
+        self.rowcount = rows
+        return rows
+
+    def _execute_multi_statement_batch(self, query, statement_count):
+        """Execute and fully consume one generated multi-statement query."""
+        if statement_count == 1:
+            return self.execute(query)
+
+        db = self._get_db()
+        query_started = False
+        try:
+            query_started = True
+            self.execute(query)
+            if self.description is not None:
+                self._raise_multi_statement_result_mismatch(db)
+            rows = self.rowcount
+            for _ in range(statement_count - 1):
+                if not db.more_results():
+                    self._raise_multi_statement_result_mismatch(db)
+                if db.next_result() != 0:
+                    self._raise_multi_statement_result_mismatch(db)
+                self._do_get_result(db)
+                if self.description is not None:
+                    self._raise_multi_statement_result_mismatch(db)
+                self._post_get_result()
+                rows += self.rowcount
+            if db.more_results():
+                self._raise_multi_statement_result_mismatch(db)
+            return rows
+        except BaseException as exc:
+            # A server-side SQL error from next_result() terminates the rest of
+            # the multi-statement query and leaves the protocol synchronized.
+            # Interruptions and client/protocol failures can leave unread
+            # results, so discard the connection instead of risking reuse.
+            self.description = None
+            self.description_flags = None
+            self.warning_count = 0
+            self.rowcount = None
+            self.lastrowid = None
+            self._result = None
+            self._rows = None
+            self.rownumber = None
+            if query_started and self._multi_statement_error_needs_close(exc):
+                self._close_connection(db)
+            raise
+
+    def _raise_multi_statement_result_mismatch(self, db):
+        if self._result is not None:
+            try:
+                self._result.discard()
+            except BaseException:  # noqa: S110
+                pass
+            self._result = None
+        self._close_connection(db)
+        raise InternalError("multi-statement executemany result count mismatch")
+
+    @staticmethod
+    def _close_connection(db):
+        try:
+            db.close()
+        except BaseException:  # noqa: S110
+            pass
+
+    def _multi_statement_error_needs_close(self, exc):
+        if not isinstance(exc, MySQLError):
+            return True
+        if not exc.args or not isinstance(exc.args[0], int):
+            return True
+        errno = exc.args[0]
+        return (
+            CR.MIN_ERROR <= errno <= CR.MAX_ERROR
+            or errno == 1153  # ER_NET_PACKET_TOO_LARGE
+            or errno == 1927  # ER_CONNECTION_KILLED (MariaDB)
+            or errno == 4031  # ER_CLIENT_INTERACTION_TIMEOUT
+        )
 
     def _do_execute_many(
         self, prefix, values, postfix, args, max_stmt_length, encoding
@@ -253,7 +423,11 @@ class BaseCursor:
             postfix = postfix.encode(encoding)
         sql = bytearray(prefix)
         args = iter(args)
-        v = self._mogrify(values, next(args))
+        try:
+            first_arg = next(args)
+        except StopIteration:
+            return
+        v = self._mogrify(values, first_arg)
         sql += v
         rows = 0
         for arg in args:

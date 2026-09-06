@@ -2,9 +2,11 @@ import threading
 import time
 
 import pytest
-from configdb import connection_factory
+from configdb import connection_factory, connection_kwargs
 
+from MySQLdb.connections import Connection
 from MySQLdb._exceptions import ProgrammingError
+from MySQLdb.constants import CLIENT
 
 
 @pytest.fixture
@@ -20,14 +22,18 @@ def test_multi_statements_default_true(conn):
     cursor = conn.cursor()
 
     cursor.execute("select 17; select 2")
+    assert conn.more_results() is True
     rows = cursor.fetchall()
     assert rows == ((17,),)
+    assert cursor.nextset() == 1
+    assert conn.more_results() is False
 
 
 def test_multi_statements_false():
     conn = connection_factory(multi_statements=False)
     try:
         cursor = conn.cursor()
+        assert not conn.client_flag & CLIENT.MULTI_STATEMENTS
 
         with pytest.raises(ProgrammingError):
             cursor.execute("select 17; select 2")
@@ -37,6 +43,30 @@ def test_multi_statements_false():
         assert rows == ((17,),)
     finally:
         conn.close()
+
+
+def test_executemany_fallback_option():
+    with connection_factory() as conn:
+        assert conn.executemany_fallback == "loop"
+
+    with connection_factory(executemany_fallback="multi") as conn:
+        assert conn.executemany_fallback == "multi"
+
+    with pytest.raises(ValueError, match="executemany_fallback"):
+        connection_factory(executemany_fallback="invalid")
+
+
+def test_executemany_fallback_connection_subclass_default():
+    class MultiConnection(Connection):
+        executemany_fallback = "multi"
+
+    with MultiConnection(**connection_kwargs({})) as conn:
+        assert conn.executemany_fallback == "multi"
+
+    with MultiConnection(
+        **connection_kwargs({"executemany_fallback": "loop"})
+    ) as conn:
+        assert conn.executemany_fallback == "loop"
 
 
 def test_ping_false_warns(conn):

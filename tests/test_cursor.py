@@ -1,10 +1,13 @@
 from textwrap import dedent
+from types import SimpleNamespace
 
 import pytest
 from configdb import connection_factory
 
 import MySQLdb.cursors
-from MySQLdb.constants import ER
+from MySQLdb._exceptions import IntegrityError, InternalError, OperationalError
+from MySQLdb.constants import CLIENT, ER
+from MySQLdb.converters import conversions
 
 _conns = []
 _tables = []
@@ -81,6 +84,14 @@ def test_executemany():
         "execute many with %s not in one query"
     )
 
+    # bytes and bytearray queries use the same INSERT/REPLACE fast path.
+    cursor.executemany(b"insert into test (data) values (%s)", [(10,), (11,)])
+    assert cursor._executed.endswith(b"(10),(11)")
+    cursor.executemany(
+        bytearray(b"insert into test (data) values (%s)"), [(12,), (13,)]
+    )
+    assert cursor._executed.endswith(b"(12),(13)")
+
     # dict args
     data_dict = [{"data": i} for i in range(10)]
     cursor.executemany("insert into test (data) values (%(data)s)", data_dict)
@@ -104,6 +115,463 @@ def test_executemany():
         )
     finally:
         cursor.execute("DROP TABLE IF EXISTS percent_test")
+
+
+@pytest.mark.parametrize(
+    "Cursor", [MySQLdb.cursors.Cursor, MySQLdb.cursors.SSCursor]
+)
+def test_executemany_multi_update(Cursor):
+    conn = connect(executemany_fallback="multi")
+    cursor = conn.cursor(Cursor)
+    cursor.execute(
+        "CREATE TABLE executemany_multi_update "
+        "(id int primary key, data varchar(100))"
+    )
+    _tables.append("executemany_multi_update")
+    cursor.executemany(
+        "INSERT INTO executemany_multi_update (id, data) VALUES (%s, %s)",
+        [(1, 0), (2, 0), (3, 0)],
+    )
+    assert MySQLdb.cursors._EXECUTEMANY_MULTI_SEPARATOR not in cursor._executed
+    assert b"),(" in cursor._executed
+
+    rows = cursor.executemany(
+        "UPDATE executemany_multi_update "
+        "SET data=%(data)s WHERE id=%(id)s",
+        [
+            {"id": 1, "data": "ten;still-a-value"},
+            {"id": 2, "data": "twenty"},
+            {"id": 3, "data": "thirty"},
+        ],
+    )
+
+    assert rows == 3
+    assert cursor.rowcount == 3
+    assert cursor.description is None
+    assert cursor._executed.count(MySQLdb.cursors._EXECUTEMANY_MULTI_SEPARATOR) == 2
+    assert conn.affected_rows() == 1
+    assert conn.warning_count() == 0
+    assert conn.more_results() is False
+
+    cursor.execute("SELECT id, data FROM executemany_multi_update ORDER BY id")
+    assert cursor.fetchall() == (
+        (1, "ten;still-a-value"),
+        (2, "twenty"),
+        (3, "thirty"),
+    )
+
+
+def test_executemany_multi_delete():
+    conn = connect(executemany_fallback="multi")
+    cursor = conn.cursor()
+    cursor.execute(
+        "CREATE TABLE executemany_multi_delete (id int primary key, data int)"
+    )
+    _tables.append("executemany_multi_delete")
+    cursor.executemany(
+        "INSERT INTO executemany_multi_delete (id, data) VALUES (%s, %s)",
+        [(1, 10), (2, 20), (3, 30)],
+    )
+
+    assert (
+        cursor.executemany(
+            "DELETE FROM executemany_multi_delete WHERE id=%s", [(1,), (3,)]
+        )
+        == 2
+    )
+    assert cursor.rowcount == 2
+    assert cursor._executed.count(MySQLdb.cursors._EXECUTEMANY_MULTI_SEPARATOR) == 1
+    assert conn.affected_rows() == 1
+    cursor.execute("SELECT id FROM executemany_multi_delete")
+    assert cursor.fetchall() == ((2,),)
+
+
+def test_executemany_multi_keeps_last_statement_metadata():
+    conn = connect(executemany_fallback="multi")
+    cursor = conn.cursor()
+    cursor.execute(
+        "CREATE TABLE executemany_multi_metadata "
+        "(id int primary key auto_increment, data varchar(1))"
+    )
+    _tables.append("executemany_multi_metadata")
+
+    assert (
+        cursor.executemany(
+            "INSERT IGNORE INTO executemany_multi_metadata SET data=%s",
+            [("a",), ("b",), ("too long",)],
+        )
+        == 3
+    )
+    assert cursor.rowcount == 3
+    assert cursor.lastrowid == 3
+    assert conn.insert_id() == 3
+    assert conn.affected_rows() == 1
+    assert conn.warning_count() > 0
+    assert conn.more_results() is False
+
+
+def test_executemany_multi_policy_and_capability():
+    conn = connect()
+    cursor = conn.cursor()
+    cursor.execute(
+        "CREATE TABLE executemany_multi_policy (id int primary key, data int)"
+    )
+    _tables.append("executemany_multi_policy")
+    cursor.executemany(
+        "INSERT INTO executemany_multi_policy (id, data) VALUES (%s, %s)",
+        [(1, 0), (2, 0)],
+    )
+
+    query = "UPDATE executemany_multi_policy SET data=%s WHERE id=%s"
+    cursor.executemany(query, [(10, 1), (20, 2)])
+    assert MySQLdb.cursors._EXECUTEMANY_MULTI_SEPARATOR not in cursor._executed
+
+    class MultiCursor(MySQLdb.cursors.Cursor):
+        executemany_fallback = "multi"
+
+    subclass_cursor = conn.cursor(MultiCursor)
+    subclass_cursor.executemany(query, [(11, 1), (21, 2)])
+    assert (
+        subclass_cursor._executed.count(
+            MySQLdb.cursors._EXECUTEMANY_MULTI_SEPARATOR
+        )
+        == 1
+    )
+
+    cursor.executemany_fallback = "multi"
+    cursor.executemany(query, [(12, 1), (22, 2)])
+    assert cursor._executed.count(MySQLdb.cursors._EXECUTEMANY_MULTI_SEPARATOR) == 1
+    assert cursor.executemany(
+        query + " -- trailing comment", [(13, 1), (23, 2)]
+    ) == 2
+    assert cursor._executed.count(MySQLdb.cursors._EXECUTEMANY_MULTI_SEPARATOR) == 1
+
+    cursor.executemany_fallback = "loop"
+    cursor.executemany(query, [(14, 1), (24, 2)])
+    assert MySQLdb.cursors._EXECUTEMANY_MULTI_SEPARATOR not in cursor._executed
+
+    with pytest.raises(ValueError, match="executemany_fallback"):
+        cursor.executemany_fallback = "invalid"
+        cursor.executemany(query, [(15, 1), (25, 2)])
+
+    conn.commit()
+    no_multi_conn = connect(
+        executemany_fallback="multi", multi_statements=False
+    )
+    no_multi_cursor = no_multi_conn.cursor()
+    no_multi_cursor.executemany(query, [(16, 1), (26, 2)])
+    assert (
+        MySQLdb.cursors._EXECUTEMANY_MULTI_SEPARATOR
+        not in no_multi_cursor._executed
+    )
+    no_multi_conn.rollback()
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("UPDATE t SET value=%s", True),
+        (b"DELETE FROM t WHERE id=%s", True),
+        (bytearray(b"UPDATE t SET value=%s"), True),
+        ("INSERT INTO t SET value=%s", True),
+        ("REPLACE INTO t SET value=%s", True),
+        ("WITH values_ AS (SELECT 1) UPDATE t SET value=%s", False),
+        ("UPDATE t SET value=%s;", False),
+        ("UPDATE t SET value=%s RETURNING id", False),
+        ("SELECT %s", False),
+        ("/* comment */ UPDATE t SET value=%s", False),
+    ],
+)
+def test_is_executemany_dml(query, expected):
+    assert MySQLdb.cursors._is_executemany_dml(query) is expected
+
+
+def test_executemany_multi_batch_limits_and_single_arg():
+    class RecordingCursor(MySQLdb.cursors.Cursor):
+        max_multi_stmt_length = 1_000_000
+        max_multi_stmt_count = 2
+
+        def __init__(self, connection):
+            super().__init__(connection)
+            self.execute_calls = []
+
+        def execute(self, query, args=None):
+            self.execute_calls.append((query, args))
+            return super().execute(query, args)
+
+    conn = connect(executemany_fallback="multi")
+    cursor = conn.cursor(RecordingCursor)
+    cursor.execute(
+        "CREATE TABLE executemany_multi_limits "
+        "(id int primary key, data text)"
+    )
+    _tables.append("executemany_multi_limits")
+    cursor.executemany(
+        "INSERT INTO executemany_multi_limits (id, data) VALUES (%s, %s)",
+        [(i, 0) for i in range(1, 7)],
+    )
+
+    query = "UPDATE executemany_multi_limits SET data=%s WHERE id=%s"
+    cursor.execute_calls.clear()
+    assert cursor.executemany(query, [(i * 10, i) for i in range(1, 6)]) == 5
+    assert len(cursor.execute_calls) == 3
+    assert [
+        bytes(q).count(MySQLdb.cursors._EXECUTEMANY_MULTI_SEPARATOR)
+        for q, args in cursor.execute_calls
+    ] == [1, 1, 0]
+    assert all(args is None for query, args in cursor.execute_calls)
+    assert cursor.rowcount == 5
+    assert conn.affected_rows() == 1
+
+    first_arg = ("a", 1)
+    second_base_arg = ("", 2)
+    first_statement = cursor._mogrify(query, first_arg)
+    second_base_statement = cursor._mogrify(query, second_base_arg)
+    filler_length = (
+        16_000
+        - len(first_statement)
+        - len(MySQLdb.cursors._EXECUTEMANY_MULTI_SEPARATOR)
+        - len(second_base_statement)
+    )
+    boundary_args = [first_arg, ("x" * filler_length, 2), ("c", 3)]
+    cursor.max_multi_stmt_count = 200
+    cursor.max_multi_stmt_length = 16_000
+    cursor.execute_calls.clear()
+    assert cursor.executemany(query, boundary_args) == 3
+    assert len(cursor.execute_calls) == 2
+    assert len(cursor.execute_calls[0][0]) == 16_000
+
+    cursor.max_multi_stmt_length = 1_000_000
+    cursor.max_multi_stmt_count = 200
+    cursor.execute_calls.clear()
+    assert (
+        cursor.executemany(
+            "DELETE FROM executemany_multi_limits WHERE id=%s",
+            [(1000 + i,) for i in range(201)],
+        )
+        == 0
+    )
+    assert len(cursor.execute_calls) == 2
+    assert [
+        bytes(q).count(MySQLdb.cursors._EXECUTEMANY_MULTI_SEPARATOR)
+        for q, args in cursor.execute_calls
+    ] == [199, 0]
+
+    cursor.execute_calls.clear()
+    arg = (60, 6)
+    assert cursor.executemany(query, [arg]) == 1
+    assert cursor.execute_calls == [(cursor._mogrify(query, arg), None)]
+
+    assert MySQLdb.cursors.BaseCursor.max_multi_stmt_length == 16_000
+    assert MySQLdb.cursors.BaseCursor.max_multi_stmt_count == 200
+
+
+def test_executemany_multi_streams_arguments():
+    class RecordingCursor(MySQLdb.cursors.Cursor):
+        max_multi_stmt_count = 2
+
+        def _mogrify(self, query, args):
+            return (query % args).encode()
+
+        def execute(self, query, args=None):
+            calls.append(query)
+            self.rowcount = 1
+            return 1
+
+        def _execute_multi_statement_batch(self, query, statement_count):
+            if statement_count == 1:
+                return super()._execute_multi_statement_batch(query, statement_count)
+            calls.append(query)
+            return statement_count
+
+    calls = []
+    cursor = RecordingCursor(
+        SimpleNamespace(
+            executemany_fallback="multi", client_flag=CLIENT.MULTI_STATEMENTS
+        )
+    )
+
+    def params():
+        yield (1,)
+        yield (2,)
+        yield (3,)
+        assert len(calls) == 1
+        yield (4,)
+        yield (5,)
+
+    query = "UPDATE t SET value=%s"
+    assert cursor.executemany(query, params()) == 5
+    assert len(calls) == 3
+    assert calls[-1] == b"UPDATE t SET value=5"
+    assert cursor.rowcount == 5
+    assert cursor.executemany(query, iter(())) is None
+    assert len(calls) == 3
+    assert cursor.rowcount == 5
+
+    calls.clear()
+    cursor.max_multi_stmt_length = 1
+    assert cursor.executemany(query, iter([(6,), (7,)])) == 2
+    assert calls == [b"UPDATE t SET value=6", b"UPDATE t SET value=7"]
+
+
+def test_executemany_multi_oversized_statement_runs_alone():
+    class TinyBatchCursor(MySQLdb.cursors.Cursor):
+        max_multi_stmt_length = 1
+
+        def __init__(self, connection):
+            super().__init__(connection)
+            self.execute_calls = []
+
+        def execute(self, query, args=None):
+            self.execute_calls.append((query, args))
+            return super().execute(query, args)
+
+    conn = connect(executemany_fallback="multi")
+    cursor = conn.cursor(TinyBatchCursor)
+    cursor.execute(
+        "CREATE TABLE executemany_multi_oversized (id int primary key, data int)"
+    )
+    _tables.append("executemany_multi_oversized")
+    cursor.execute_calls.clear()
+
+    query = "UPDATE executemany_multi_oversized SET data=%s WHERE id=%s"
+    cursor.executemany(query, [(10, 1), (20, 2)])
+    assert len(cursor.execute_calls) == 2
+    assert all(
+        MySQLdb.cursors._EXECUTEMANY_MULTI_SEPARATOR not in bytes(q)
+        for q, args in cursor.execute_calls
+    )
+
+
+@pytest.mark.parametrize("fallback", ["loop", "multi"])
+def test_executemany_multi_generator_and_empty_generator(fallback):
+    conn = connect(executemany_fallback=fallback)
+    cursor = conn.cursor()
+    cursor.execute(
+        "CREATE TABLE executemany_multi_generator (id int primary key, data int)"
+    )
+    _tables.append("executemany_multi_generator")
+    insert = "INSERT INTO executemany_multi_generator (id, data) VALUES (%s, %s)"
+    assert cursor.executemany(insert, ((i, 0) for i in range(1, 4))) == 3
+    assert cursor.executemany(insert, iter(())) is None
+    assert cursor.rowcount == 3
+
+    query = "UPDATE executemany_multi_generator SET data=%s WHERE id=%s"
+    params = ((i * 10, i) for i in range(1, 4))
+    assert cursor.executemany(query, params) == 3
+    if fallback == "multi":
+        assert cursor._executed.count(MySQLdb.cursors._EXECUTEMANY_MULTI_SEPARATOR) == 2
+    assert cursor.executemany(query, iter(())) is None
+    assert cursor.rowcount == 3
+
+    cursor.execute("SELECT id, data FROM executemany_multi_generator ORDER BY id")
+    assert cursor.fetchall() == ((1, 10), (2, 20), (3, 30))
+
+
+@pytest.mark.parametrize(
+    ("args", "expected_ids"),
+    [
+        ([(99, 10), (1, 10), (2, 20)], (99,)),
+        ([(1, 10), (99, 10), (2, 20)], (1, 99)),
+        ([(1, 10), (2, 20), (99, 10)], (1, 2, 99)),
+    ],
+)
+def test_executemany_multi_sql_error(args, expected_ids):
+    conn = connect(executemany_fallback="multi")
+    cursor = conn.cursor()
+    cursor.execute(
+        "CREATE TABLE executemany_multi_error (id int primary key, data int)"
+    )
+    _tables.append("executemany_multi_error")
+    cursor.execute("INSERT INTO executemany_multi_error VALUES (99, 0)")
+
+    with pytest.raises(IntegrityError):
+        cursor.executemany(
+            "INSERT INTO executemany_multi_error SET id=%s, data=%s", args
+        )
+
+    assert cursor.rowcount is None
+    assert conn.open
+    assert conn.more_results() is False
+    cursor.execute("SELECT id FROM executemany_multi_error ORDER BY id")
+    assert tuple(row[0] for row in cursor.fetchall()) == expected_ids
+
+
+@pytest.mark.parametrize(
+    "Cursor", [MySQLdb.cursors.Cursor, MySQLdb.cursors.SSCursor]
+)
+def test_executemany_multi_rejects_unexpected_result_count(Cursor):
+    class RawSQL:
+        pass
+
+    def raw_sql_literal(value, conv):
+        return b"1; SELECT 1"
+
+    cleanup_conn = connect()
+    cleanup_cursor = cleanup_conn.cursor()
+    cleanup_cursor.execute(
+        "CREATE TABLE executemany_multi_result_count (id int primary key, data int)"
+    )
+    _tables.append("executemany_multi_result_count")
+    cleanup_cursor.execute(
+        "INSERT INTO executemany_multi_result_count VALUES (1, 0)"
+    )
+    cleanup_conn.commit()
+
+    custom_conversions = conversions.copy()
+    custom_conversions[RawSQL] = raw_sql_literal
+    conn = connect(executemany_fallback="multi", conv=custom_conversions)
+    cursor = conn.cursor(Cursor)
+
+    with pytest.raises(InternalError, match="multi-statement executemany"):
+        cursor.executemany(
+            "UPDATE executemany_multi_result_count SET data=%s",
+            [(RawSQL(),), (RawSQL(),)],
+        )
+
+    assert not conn.open
+    _conns.remove(conn)
+
+
+@pytest.mark.parametrize(
+    "failure", [KeyboardInterrupt(), OperationalError(2013, "server lost")]
+)
+def test_executemany_multi_drain_failure_closes_connection(failure):
+    class FailingCursor(MySQLdb.cursors.Cursor):
+        armed = False
+        result_number = 0
+
+        def _do_get_result(self, db):
+            super()._do_get_result(db)
+            if self.armed:
+                self.result_number += 1
+                if self.result_number == 2:
+                    raise failure
+
+    cleanup_conn = connect()
+    cleanup_cursor = cleanup_conn.cursor()
+    cleanup_cursor.execute(
+        "CREATE TABLE executemany_multi_drain_failure "
+        "(id int primary key, data int)"
+    )
+    _tables.append("executemany_multi_drain_failure")
+    cleanup_cursor.execute(
+        "INSERT INTO executemany_multi_drain_failure VALUES (1, 0), (2, 0)"
+    )
+    cleanup_conn.commit()
+
+    conn = connect(executemany_fallback="multi")
+    cursor = conn.cursor(FailingCursor)
+    cursor.armed = True
+    with pytest.raises(type(failure)) as exc_info:
+        cursor.executemany(
+            "UPDATE executemany_multi_drain_failure SET data=%s WHERE id=%s",
+            [(10, 1), (20, 2)],
+        )
+
+    assert exc_info.value is failure
+    assert not conn.open
+    _conns.remove(conn)
 
 
 def test_pyparam():
