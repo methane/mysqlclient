@@ -270,9 +270,7 @@ class BaseCursor:
         statements if the connection has multi statements enabled. Otherwise,
         it is equivalent to looping over args with execute().
         """
-        args = list(args)
-        args_count = len(args)
-        if not args_count:
+        if not args:
             return
 
         m = _match_insert_values(query)
@@ -303,21 +301,25 @@ class BaseCursor:
             and db.client_flag & CLIENT.MULTI_STATEMENTS
             and _is_executemany_dml(query)
         ):
-            if args_count == 1:
-                return self.execute(query, args[0])
             return self._do_execute_many_multi(query, args)
 
-        self.rowcount = sum(self.execute(query, arg) for arg in args)
+        rows = None
+        for arg in args:
+            result = self.execute(query, arg)
+            rows = result if rows is None else rows + result
+        if rows is None:
+            return
+        self.rowcount = rows
         return self.rowcount
 
     def _do_execute_many_multi(self, query, args):
         rows = 0
-        statement_count = 1
-        sql = bytearray(self._mogrify(query, args[0]))
+        statement_count = 0
+        sql = bytearray()
 
-        for arg in args[1:]:
+        for arg in args:
             statement = self._mogrify(query, arg)
-            if (
+            if statement_count and (
                 statement_count >= self.max_multi_stmt_count
                 or len(sql) + len(_EXECUTEMANY_MULTI_SEPARATOR) + len(statement)
                 > self.max_multi_stmt_length
@@ -325,18 +327,23 @@ class BaseCursor:
                 rows += self._execute_multi_statement_batch(
                     bytes(sql), statement_count
                 )
-                sql = bytearray(statement)
-                statement_count = 1
-            else:
+                sql.clear()
+                statement_count = 0
+            if statement_count:
                 sql += _EXECUTEMANY_MULTI_SEPARATOR
-                sql += statement
-                statement_count += 1
+            sql += statement
+            statement_count += 1
+        if not statement_count:
+            return
         rows += self._execute_multi_statement_batch(bytes(sql), statement_count)
         self.rowcount = rows
         return rows
 
     def _execute_multi_statement_batch(self, query, statement_count):
         """Execute and fully consume one generated multi-statement query."""
+        if statement_count == 1:
+            return self.execute(query)
+
         db = self._get_db()
         query_started = False
         try:
@@ -416,7 +423,11 @@ class BaseCursor:
             postfix = postfix.encode(encoding)
         sql = bytearray(prefix)
         args = iter(args)
-        v = self._mogrify(values, next(args))
+        try:
+            first_arg = next(args)
+        except StopIteration:
+            return
+        v = self._mogrify(values, first_arg)
         sql += v
         rows = 0
         for arg in args:

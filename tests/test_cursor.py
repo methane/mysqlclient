@@ -1,11 +1,12 @@
 from textwrap import dedent
+from types import SimpleNamespace
 
 import pytest
 from configdb import connection_factory
 
 import MySQLdb.cursors
 from MySQLdb._exceptions import IntegrityError, InternalError, OperationalError
-from MySQLdb.constants import ER
+from MySQLdb.constants import CLIENT, ER
 from MySQLdb.converters import conversions
 
 _conns = []
@@ -359,10 +360,58 @@ def test_executemany_multi_batch_limits_and_single_arg():
     cursor.execute_calls.clear()
     arg = (60, 6)
     assert cursor.executemany(query, [arg]) == 1
-    assert cursor.execute_calls == [(query, arg)]
+    assert cursor.execute_calls == [(cursor._mogrify(query, arg), None)]
 
     assert MySQLdb.cursors.BaseCursor.max_multi_stmt_length == 16_000
     assert MySQLdb.cursors.BaseCursor.max_multi_stmt_count == 200
+
+
+def test_executemany_multi_streams_arguments():
+    class RecordingCursor(MySQLdb.cursors.Cursor):
+        max_multi_stmt_count = 2
+
+        def _mogrify(self, query, args):
+            return (query % args).encode()
+
+        def execute(self, query, args=None):
+            calls.append(query)
+            self.rowcount = 1
+            return 1
+
+        def _execute_multi_statement_batch(self, query, statement_count):
+            if statement_count == 1:
+                return super()._execute_multi_statement_batch(query, statement_count)
+            calls.append(query)
+            return statement_count
+
+    calls = []
+    cursor = RecordingCursor(
+        SimpleNamespace(
+            executemany_fallback="multi", client_flag=CLIENT.MULTI_STATEMENTS
+        )
+    )
+
+    def params():
+        yield (1,)
+        yield (2,)
+        yield (3,)
+        assert len(calls) == 1
+        yield (4,)
+        yield (5,)
+
+    query = "UPDATE t SET value=%s"
+    assert cursor.executemany(query, params()) == 5
+    assert len(calls) == 3
+    assert calls[-1] == b"UPDATE t SET value=5"
+    assert cursor.rowcount == 5
+    assert cursor.executemany(query, iter(())) is None
+    assert len(calls) == 3
+    assert cursor.rowcount == 5
+
+    calls.clear()
+    cursor.max_multi_stmt_length = 1
+    assert cursor.executemany(query, iter([(6,), (7,)])) == 2
+    assert calls == [b"UPDATE t SET value=6", b"UPDATE t SET value=7"]
 
 
 def test_executemany_multi_oversized_statement_runs_alone():
@@ -394,23 +443,26 @@ def test_executemany_multi_oversized_statement_runs_alone():
     )
 
 
-def test_executemany_multi_generator_and_empty_generator():
-    conn = connect(executemany_fallback="multi")
+@pytest.mark.parametrize("fallback", ["loop", "multi"])
+def test_executemany_multi_generator_and_empty_generator(fallback):
+    conn = connect(executemany_fallback=fallback)
     cursor = conn.cursor()
     cursor.execute(
         "CREATE TABLE executemany_multi_generator (id int primary key, data int)"
     )
     _tables.append("executemany_multi_generator")
-    cursor.executemany(
-        "INSERT INTO executemany_multi_generator (id, data) VALUES (%s, %s)",
-        [(1, 0), (2, 0), (3, 0)],
-    )
+    insert = "INSERT INTO executemany_multi_generator (id, data) VALUES (%s, %s)"
+    assert cursor.executemany(insert, ((i, 0) for i in range(1, 4))) == 3
+    assert cursor.executemany(insert, iter(())) is None
+    assert cursor.rowcount == 3
 
     query = "UPDATE executemany_multi_generator SET data=%s WHERE id=%s"
     params = ((i * 10, i) for i in range(1, 4))
     assert cursor.executemany(query, params) == 3
-    assert cursor._executed.count(MySQLdb.cursors._EXECUTEMANY_MULTI_SEPARATOR) == 2
+    if fallback == "multi":
+        assert cursor._executed.count(MySQLdb.cursors._EXECUTEMANY_MULTI_SEPARATOR) == 2
     assert cursor.executemany(query, iter(())) is None
+    assert cursor.rowcount == 3
 
     cursor.execute("SELECT id, data FROM executemany_multi_generator ORDER BY id")
     assert cursor.fetchall() == ((1, 10), (2, 20), (3, 30))
